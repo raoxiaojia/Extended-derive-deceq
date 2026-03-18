@@ -1,0 +1,13 @@
+name = "extended-derive-deceq"
+version = "0.1.0"
+defaultTargets = ["ExtendedDeriveDecEq"]
+keywords = ["DecidableEq", "deriving", "mutual", "nested", "metaprogramming"]
+description = "Computable DecidableEq deriver for nested inductive types in Lean 4"
+
+[[lean_lib]]
+name = "ExtendedDeriveDecEq"
+srcDir = "ExtendedDeriveDecEq"
+
+[[lean_lib]]
+name = "Test"
+roots = ["Test"]
