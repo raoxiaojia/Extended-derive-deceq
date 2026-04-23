@@ -64,6 +64,7 @@ structure RecursorAnalysis where
   paramBinderStxs : Array (TSyntax ``Lean.Parser.Term.bracketedBinder)
   instBinderStxs : Array (TSyntax ``Lean.Parser.Term.bracketedBinder)
   ctorsByType : Array (Array CtorInfo)  -- motive idx → constructors
+  isPrivate : Bool                 -- source inductive is `private` — emit `private def`
 
 /-- Compute which motives are part of a recursive call cycle (Floyd-Warshall). -/
 private def computeIsRecursive (analysis : RecursorAnalysis) : Array Bool := Id.run do
@@ -248,19 +249,69 @@ def analyzeRecursor (indName : Name) : MetaM RecursorAnalysis := do
                   --     (e.g. {n : Nat} for `Bits : Nat → Type`) — skip them.
                   --     Among explicit binders, those whose type head is a motive fvar
                   --     are IHs; the rest are data fields.
+                  -- Walk the ctor's own type to get "is fixed in ctor's true
+                  -- return type" per user binder. The minor's retType always
+                  -- mentions every user binder via the ctor application, so
+                  -- it cannot be used for the "is index" decision; we need
+                  -- the ctor's own return type (e.g. `Bits (n+1)` vs `Bad`).
+                  let ctorConstInfo ← getConstInfoCtor ctorName
+                  let ctorFixedFlags ← forallTelescopeReducing ctorConstInfo.type
+                    fun ctorFvars ctorRetType => do
+                      let mut flags : Array Bool := #[]
+                      for cf in ctorFvars[numParams:] do
+                        flags := flags.push (ctorRetType.containsFVar cf.fvarId!)
+                      pure flags
+
                   let mut fieldTypes : Array Expr := #[]
                   let mut fieldVars : Array Expr := #[]
                   let mut ihVars : Array Expr := #[]
+                  let mut userBinderIdx : Nat := 0
                   for x in fvars do
                     let ldecl ← x.fvarId!.getDecl
-                    if ldecl.binderInfo != .default then
-                      continue
                     let xType ← inferType x
-                    if motiveVars.any (· == xType.getAppFn) then
+                    let isIH := ldecl.binderInfo == .default
+                      && motiveVars.any (· == xType.getAppFn)
+                    if isIH then
                       ihVars := ihVars.push x
-                    else
+                      continue
+                    -- User binder: index into ctorFixedFlags by position
+                    let isFixedInCtorReturn :=
+                      ctorFixedFlags[userBinderIdx]?.getD false
+                    userBinderIdx := userBinderIdx + 1
+                    if ldecl.binderInfo == .default then
+                      -- Explicit data field
+                      -- F3: higher-order recursive argument.
+                      if xType.isForall then
+                        let codomainHead := xType.getForallBody.getAppFn
+                        if let .const cname _ := codomainHead then
+                          if indVal.all.any (· == cname) then
+                            throwError "\
+                              derive_deceq: constructor {ctorName} has a \
+                              higher-order recursive argument of type{indentExpr xType}\n\
+                              DecidableEq on a function space is not decidable."
                       fieldTypes := fieldTypes.push xType
                       fieldVars := fieldVars.push x
+                    else
+                      -- Implicit user binder: skip if fixed in ctor's own
+                      -- return type (index unified by motive) or referenced in
+                      -- another user binder's type (subst chain unifies it).
+                      -- Otherwise it's a genuinely free user field (F4:
+                      -- `{child : Bad}` in `Bad.mk`) that must be compared.
+                      let mut referenced := isFixedInCtorReturn
+                      if !referenced then
+                        for y in fvars do
+                          if y == x then continue
+                          let yLdecl ← y.fvarId!.getDecl
+                          let yType ← inferType y
+                          if yLdecl.binderInfo == .default
+                              && motiveVars.any (· == yType.getAppFn) then
+                            continue
+                          if yType.containsFVar x.fvarId! then
+                            referenced := true
+                            break
+                      if !referenced then
+                        fieldTypes := fieldTypes.push xType
+                        fieldVars := fieldVars.push x
 
                   -- (d) Map each IH to the data field it provides a recursive proof for.
                   --     IH type is `motive_j field_k`, so we match `field_k` against
@@ -300,10 +351,14 @@ def analyzeRecursor (indName : Name) : MetaM RecursorAnalysis := do
                 motiveIndexBinderStxs, ctorsByType)))
 
   let ns ← getCurrNamespace
-  let defBaseNames := typeNames.map (·.replacePrefix ns .anonymous)
+  -- Demangle private names so the emitted `def` name matches what Lean
+  -- will re-mangle under `private def` (see `isPrivate` below).
+  let defBaseNames := typeNames.map fun n =>
+    (Lean.privateToUserName? n |>.getD n).replacePrefix ns .anonymous
+  let isPrivate := Lean.isPrivateName firstType
   return { typeNames, defBaseNames, numUserTypes, numMotives,
            motiveDomainStxs, motiveIndNames, motiveIndexBinderStxs,
-           paramBinderStxs, instBinderStxs, ctorsByType }
+           paramBinderStxs, instBinderStxs, ctorsByType, isPrivate }
 
 /-- Generate the if-subst comparison chain (matches the standard DecEq deriver pattern).
     Each field is compared in sequence; after `subst h`, types of subsequent fields are
@@ -359,29 +414,55 @@ private def mkSameCtorAlt
 
     for i in [:numFields] do
       let x := fvars[numParams + i]!
-      if returnType.containsFVar x.fvarId! then
-        -- Fixed field/index: appears in return type, shared between both sides
+      let ldecl ← x.fvarId!.getDecl
+      let isExplicit := ldecl.binderInfo == .default
+      let isFixed := returnType.containsFVar x.fvarId!
+      let fi := mkFieldId "f" i
+      let gi := mkFieldId "g" i
+
+      -- Fixed binders are unified between both sides by the motive, so the
+      -- minor lambda takes them only once (as `_`). Free binders appear twice.
+      if isFixed then
         ctorArgs1 := ctorArgs1.push (← `(_))
       else
-        let fi := mkFieldId "f" i
-        let gi := mkFieldId "g" i
         ctorArgs1 := ctorArgs1.push ⟨fi.raw⟩
         ctorArgs2 := ctorArgs2.push ⟨gi.raw⟩
-        let ldecl ← x.fvarId!.getDecl
-        if ldecl.binderInfo != .default then
-          -- Free index variable (implicit in constructor): compare with plain decEq
-          let xType ← inferType x
-          let isProof ← Meta.isProp xType
-          if !isProof then
-            todo := todo.push (fi, gi, none, false)
-        else
-          -- Actual data field: use recursor-derived FieldInfo for recursiveness/isProp
-          let field := ctor.fields[fieldIdx]!
-          fieldIdx := fieldIdx + 1
+
+      -- Does this binder have a `FieldInfo` entry in `ctor.fields`?
+      -- Mirror the analyzer's classification:
+      --   explicit                                     → yes
+      --   implicit + fixed (appears in return type)    → no (index)
+      --   implicit + free + referenced in another user → no (determined)
+      --   implicit + free + not referenced anywhere    → yes (F4: user field)
+      let hasFieldInfo ←
+        if isExplicit then pure true
+        else if isFixed then pure false
+        else do
+          let mut referenced := false
+          for j in [:numFields] do
+            if j == i then continue
+            let y := fvars[numParams + j]!
+            let yType ← inferType y
+            if yType.containsFVar x.fvarId! then
+              referenced := true
+              break
+          pure (!referenced)
+
+      if hasFieldInfo then
+        let field := ctor.fields[fieldIdx]!
+        fieldIdx := fieldIdx + 1
+        if !isFixed then
           if !field.isProp then
             todo := todo.push (fi, gi, field.recursiveMotiveIdx, false)
           else
             todo := todo.push (fi, gi, none, true)
+      else if !isFixed then
+        -- Free implicit index binder (determined by another user binder):
+        -- plain decEq; the subst chain unifies it with the other field.
+        let xType ← inferType x
+        let isProof ← Meta.isProp xType
+        if !isProof then
+          todo := todo.push (fi, gi, none, false)
 
     if ctorArgs1.isEmpty then return ← `(fun () => isTrue rfl)
     let rhs ← mkIfSubstChain analysis todo.toList
@@ -404,6 +485,38 @@ private def mkDecEqFunc
   let sameCtorId := mkIdent sameCtorNames[motiveIdx]!
   let ctors := analysis.ctorsByType[motiveIdx]!
 
+  -- Short-circuits for degenerate inductives that break the standard
+  -- casesOnSameCtor + ctorIdx path.
+  let indexBinders := analysis.motiveIndexBinderStxs[motiveIdx]!
+  let mainBinderStx ← `(bracketedBinder| ($aId $bId : $domainStx))
+  let allBinderStxs := analysis.paramBinderStxs ++ analysis.instBinderStxs
+    ++ indexBinders ++ #[mainBinderStx]
+
+  -- F5a: empty inductive — any value is uninhabited, nomatch either side.
+  if ctors.isEmpty then
+    return ←
+      if analysis.isPrivate then
+        `(command| private def $defId
+            $[$allBinderStxs:bracketedBinder]* : Decidable ($aId = $bId) := nomatch $aId)
+      else
+        `(command| def $defId
+            $[$allBinderStxs:bracketedBinder]* : Decidable ($aId = $bId) := nomatch $aId)
+
+  -- F5b: Prop-valued inductive — all inhabitants are definitionally equal
+  -- by proof irrelevance, so `rfl : a = b` type-checks.
+  let indVal ← getConstInfoInduct indName
+  let isPropInd := match indVal.type.getForallBody with
+    | .sort l => l.isZero
+    | _ => false
+  if isPropInd then
+    return ←
+      if analysis.isPrivate then
+        `(command| private def $defId
+            $[$allBinderStxs:bracketedBinder]* : Decidable ($aId = $bId) := isTrue rfl)
+      else
+        `(command| def $defId
+            $[$allBinderStxs:bracketedBinder]* : Decidable ($aId = $bId) := isTrue rfl)
+
   let mut alts : Array Term := #[]
   for ctor in ctors do
     alts := alts.push (← mkSameCtorAlt analysis ctor)
@@ -411,7 +524,6 @@ private def mkDecEqFunc
   -- For indexed types, casesOnSameCtor's motive has implicit index binders
   -- that Lean can't always infer. Provide the motive explicitly, using the
   -- same index binder names that appear in domainStx so references resolve.
-  let indexBinders := analysis.motiveIndexBinderStxs[motiveIdx]!
   let sameCtorCall ← do
     if indexBinders.isEmpty then
       if ctors.size ≤ 1 then
@@ -443,15 +555,15 @@ private def mkDecEqFunc
         | .isTrue h => $sameCtorCall
         | .isFalse h => isFalse (fun h' => h (congrArg $ctorIdxId h')))
 
-  let mainBinderStx ← `(bracketedBinder| ($aId $bId : $domainStx))
-  let allBinderStxs := analysis.paramBinderStxs ++ analysis.instBinderStxs
-    ++ indexBinders ++ #[mainBinderStx]
-
   let termSuffix ← if isRecursive[motiveIdx]!
     then `(Parser.Termination.suffix| termination_by structural $aId)
     else `(Parser.Termination.suffix|)
-  `(command| def $defId $[$allBinderStxs:bracketedBinder]* : Decidable ($aId = $bId) := $body
-    $termSuffix:suffix)
+  if analysis.isPrivate then
+    `(command| private def $defId $[$allBinderStxs:bracketedBinder]* : Decidable ($aId = $bId) := $body
+      $termSuffix:suffix)
+  else
+    `(command| def $defId $[$allBinderStxs:bracketedBinder]* : Decidable ($aId = $bId) := $body
+      $termSuffix:suffix)
 
 /-- Main entry point: derive DecidableEq for all types in a mutual group. -/
 def deriveForGroup (firstName : Name) : CommandElabM Unit := do
@@ -465,14 +577,25 @@ def deriveForGroup (firstName : Name) : CommandElabM Unit := do
     for c in analysis.ctorsByType[i]! do
       trace[DecEqMutual.derive] "  motive[{i}] ctor {c.name}, nfields={c.fields.size}"
 
-  -- Generate casesOnSameCtor helpers for each motive
+  -- Generate casesOnSameCtor helpers for each motive.
+  -- Skip Prop-valued inductives: casesOnSameCtor panics on them because
+  -- the kernel's generic casesOn uses sort polymorphism that does not
+  -- unify with Prop's universe level. We short-circuit such motives to
+  -- `isTrue rfl` in mkDecEqFunc, so the helper is unused for them.
   let sameCtorNames ← liftTermElabM <| MetaM.run' <| do
     let mut names : Array Name := #[]
     for i in [:analysis.numMotives] do
       let indName := analysis.motiveIndNames[i]!
-      let sameCtorName ← mkFreshUserName (indName ++ `match_on_same_ctor)
-      mkCasesOnSameCtor sameCtorName indName
-      names := names.push sameCtorName
+      let indVal ← getConstInfoInduct indName
+      let isPropInd := match indVal.type.getForallBody with
+        | .sort l => l.isZero
+        | _ => false
+      if isPropInd then
+        names := names.push .anonymous
+      else
+        let sameCtorName ← mkFreshUserName (indName ++ `match_on_same_ctor)
+        mkCasesOnSameCtor sameCtorName indName
+        names := names.push sameCtorName
     return names
 
   -- Generate decEq functions for ALL motives (user + auxiliary)

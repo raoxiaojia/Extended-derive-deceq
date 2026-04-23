@@ -44,17 +44,14 @@ end
 derive_deceq Expr   -- generates DecidableEq for all 4 types and auxiliary containers
 ```
 
-## Supported patterns
+## Scope
 
-| Pattern                     | `deriving DecidableEq` | `derive_deceq` |
-|-----------------------------|:----------------------:|:--------------:|
-| Simple inductive/mutual     | ✓                      | ✓              |
-| Nested in `List`            | ✗                      | ✓              |
-| Nested in `Option`          | ✗                      | ✓              |
-| Nested in custom containers | ✗                      | ✓              |
-| Indexed families            | ✓                      | ✓              |
-| Parametric types            | ✓                      | ✓              |
-| Prop-typed fields           | ✓                      | ✓              |
+`derive_deceq` handles the same input space as Lean's built-in `deriving
+DecidableEq` — simple, mutual, indexed, parametric inductives, with
+Prop-typed fields — and additionally handles **nested inductives**, i.e.
+types that appear recursively inside a container like `List`, `Option`,
+`Array`, or a user-defined container. This is the case the built-in
+deriver rejects.
 
 ## How it works
 

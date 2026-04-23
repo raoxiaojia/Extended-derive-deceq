@@ -10,4 +10,5 @@ srcDir = "ExtendedDeriveDecEq"
 
 [[lean_lib]]
 name = "Test"
+srcDir = "test"
 roots = ["Test"]

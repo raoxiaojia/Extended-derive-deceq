@@ -935,3 +935,326 @@ def testSTree (a b : STree n) : Bool := a == b
 #guard !(STree.node [STree.leaf 1] == (STree.node [STree.leaf 2] : STree 3))
 
 end TestA7d
+
+-- ============================================================
+-- Regression: explicit binder appearing in the return type.
+--
+-- `analyzeRecursor` records every explicit non-IH binder as an entry
+-- in `ctor.fields`. `mkSameCtorAlt` must advance its cursor into
+-- `ctor.fields` for every explicit binder — fixed or free — otherwise
+-- a ctor like `mk : (n : Nat) → T n → Bool → T n` (with `n` explicit
+-- and in the return type) causes subsequent fields to read the wrong
+-- `FieldInfo` entries, losing `recursiveMotiveIdx`.
+-- ============================================================
+namespace TestExplicitIndexInReturn
+
+mutual
+inductive T : Nat → Type where
+  | leaf : T n
+  | mk : (n : Nat) → T n → Bool → T n
+end
+
+derive_deceq T
+
+def testT {n : Nat} (a b : T n) : Bool := a == b
+
+#guard (T.leaf : T 0) == T.leaf
+#guard T.mk 0 .leaf true == T.mk 0 .leaf true
+#guard !(T.mk 0 .leaf true == T.mk 0 .leaf false)
+#guard !(T.mk 0 .leaf true == (T.leaf : T 0))
+#guard T.mk 0 (T.mk 0 .leaf true) false == T.mk 0 (T.mk 0 .leaf true) false
+#guard !(T.mk 0 (T.mk 0 .leaf true) false == T.mk 0 (T.mk 0 .leaf false) false)
+
+end TestExplicitIndexInReturn
+
+-- ============================================================
+-- AUDIT PROBES
+-- Each namespace probes one suspected finding from audit/.
+-- Build result is the ground truth for whether the finding is real.
+-- Pattern: `Probe_<id>_<shortname>`. ID references audit report.
+-- ============================================================
+
+
+-- ------------------------------------------------------------
+-- Probe F1 (01, HIGH) — universe polymorphism.
+-- Prediction: generated def may not thread universe params.
+-- ------------------------------------------------------------
+namespace Probe_F1_UnivPoly
+universe u
+mutual
+inductive UTree (α : Type u) where
+  | leaf : α → UTree α
+  | node : List (UTree α) → UTree α
+end
+derive_deceq UTree
+example (a b : UTree Nat) : Decidable (a = b) := inferInstance
+end Probe_F1_UnivPoly
+
+
+-- ------------------------------------------------------------
+-- Probe F3 — higher-order recursive argument. FIXED: the analyzer
+-- now detects field types `A → ... → T` where `T` is in the
+-- mutual group and fails early with a targeted diagnostic.
+-- DecidableEq on a function space is undecidable, so this is the
+-- best the deriver can do.
+-- ------------------------------------------------------------
+namespace Probe_F3_HigherOrderIH
+mutual
+inductive Wrec where
+  | sup : (Nat → Wrec) → Wrec
+  | leaf : Wrec
+end
+/--
+error: derive_deceq: constructor Probe_F3_HigherOrderIH.Wrec.sup has a higher-order recursive argument of type
+  Nat → Wrec
+DecidableEq on a function space is not decidable.
+-/
+#guard_msgs (whitespace := lax) in
+derive_deceq Wrec
+end Probe_F3_HigherOrderIH
+
+
+-- ------------------------------------------------------------
+-- Probe F5a — empty inductive (0 constructors). FIXED: the
+-- deriver now short-circuits on `ctors.isEmpty` and emits
+-- `nomatch aId`.
+-- ------------------------------------------------------------
+namespace Probe_F5a_Empty
+mutual
+inductive Void0 : Type
+end
+derive_deceq Void0
+example (a b : Void0) : Decidable (a = b) := inferInstance
+end Probe_F5a_Empty
+
+
+-- ------------------------------------------------------------
+-- Probe F5b — Prop-valued inductive. FIXED: the deriver detects
+-- inductives whose resultant sort is `Prop` and emits
+-- `isTrue rfl` (valid by definitional proof irrelevance).
+-- ------------------------------------------------------------
+namespace Probe_F5b_PropInd
+mutual
+inductive MyProp : Prop where
+  | a
+  | b
+end
+derive_deceq MyProp
+example (x y : MyProp) : Decidable (x = y) := inferInstance
+end Probe_F5b_PropInd
+
+
+-- ------------------------------------------------------------
+-- Probe F6 (01, MEDIUM) — multi-parameter container nesting.
+-- Prediction: aux motive param delab may miss scope.
+-- ------------------------------------------------------------
+namespace Probe_F6_MultiParamContainer
+inductive Pair2 (α β : Type) where
+  | mk : α → β → Pair2 α β
+mutual
+inductive E6 where
+  | wrap : Pair2 E6 E6 → E6
+  | tip : Nat → E6
+end
+derive_deceq E6
+example (a b : E6) : Decidable (a = b) := inferInstance
+end Probe_F6_MultiParamContainer
+
+
+-- ------------------------------------------------------------
+-- Probe F9 (01, LOW) — Prop-via-universe (Sort u with u := 0).
+-- Prediction: isProp false at analysis; `DecidableEq p` unsynth.
+-- ------------------------------------------------------------
+namespace Probe_F9_PropViaUniv
+universe u
+mutual
+inductive Boxed (p : Sort u) where
+  | mk : Nat → p → Boxed p
+end
+derive_deceq Boxed
+end Probe_F9_PropViaUniv
+
+
+-- ------------------------------------------------------------
+-- Probe F10 (01, LOW) — single-ctor indexed family.
+-- Prediction: sameCtorCall + indexed motive workaround combo.
+-- ------------------------------------------------------------
+namespace Probe_F10_SingleCtorIndexed
+mutual
+inductive Single : Nat → Type where
+  | only : (n : Nat) → Single n
+end
+derive_deceq Single
+example : Decidable ((Single.only 0 : Single 0) = Single.only 0) := inferInstance
+end Probe_F10_SingleCtorIndexed
+
+
+-- ------------------------------------------------------------
+-- Probe C1 (02, LOW) — two fixed-explicit binders in one ctor.
+-- Prediction: should work post-fix. No existing test.
+-- ------------------------------------------------------------
+namespace Probe_C1_MultiFixedExplicit
+mutual
+inductive P2 : Nat → Nat → Type where
+  | nil : P2 0 0
+  | mk  : (m n : Nat) → P2 m n → Bool → P2 m n
+end
+derive_deceq P2
+#guard (P2.mk 0 0 .nil true) == (P2.mk 0 0 .nil true)
+#guard !((P2.mk 0 0 .nil true) == (P2.mk 0 0 .nil false))
+end Probe_C1_MultiFixedExplicit
+
+
+-- ------------------------------------------------------------
+-- Probe C2 (02, LOW) — fixed-explicit Prop binder.
+-- Prediction: cursor advances; Prop field skipped by motive.
+-- ------------------------------------------------------------
+namespace Probe_C2_FixedExplicitProp
+axiom Inv_C2 : Nat → Prop
+mutual
+inductive Wit : Nat → Type where
+  | mk : (n : Nat) → (h : Inv_C2 n) → Bool → Wit n
+end
+derive_deceq Wit
+end Probe_C2_FixedExplicitProp
+
+
+-- ------------------------------------------------------------
+-- Probe C3 (02, LOW) — fixed-implicit index + free-explicit rec.
+-- (Audit 4.3 case — included as labeled by the auditor.)
+-- ------------------------------------------------------------
+namespace Probe_C3_SpineShape
+mutual
+inductive Spine : Nat → Type where
+  | tip  : Spine 0
+  | wrap : (s : Spine n) → Bool → Spine n
+end
+derive_deceq Spine
+end Probe_C3_SpineShape
+
+
+-- ------------------------------------------------------------
+-- Probe C4 (02, LOW) — mix of fixed-explicit + free implicit.
+-- Prediction: tightest test for cursor drift.
+-- ------------------------------------------------------------
+namespace Probe_C4_MixFixedFreeImplicit
+mutual
+inductive Mix : Nat → Type where
+  | nilM : Mix 0
+  | mkM  : {k : Nat} → (n : Nat) → Mix n → Mix k → Bool → Mix n
+end
+derive_deceq Mix
+end Probe_C4_MixFixedFreeImplicit
+
+
+-- ------------------------------------------------------------
+-- Probe C6 — F4: implicit *user* recursive field. FIXED: the
+-- analyzer now records a `FieldInfo` entry for implicit binders
+-- that are not fixed and not referenced in any other user binder
+-- (i.e. genuinely free user fields like `{child : Bad}`), and
+-- `mkSameCtorAlt` advances its cursor to match.
+-- The Lean lint `unused variable child` still fires on the
+-- inductive declaration itself — suppressed locally below, since
+-- it's a signal from the user's code, not the deriver.
+-- ------------------------------------------------------------
+namespace Probe_C6_ImplicitRecField
+set_option linter.unusedVariables false in
+mutual
+inductive Bad where
+  | mk : {child : Bad} → Nat → Bad
+  | leaf : Bad
+end
+derive_deceq Bad
+example (x y : Bad) : Decidable (x = y) := inferInstance
+#guard (Bad.mk (child := Bad.leaf) 1) == Bad.mk (child := Bad.leaf) 1
+#guard !((Bad.mk (child := Bad.leaf) 1) == Bad.mk (child := Bad.leaf) 2)
+#guard !((Bad.mk (child := Bad.leaf) 1)
+    == Bad.mk (child := Bad.mk (child := Bad.leaf) 0) 1)
+end Probe_C6_ImplicitRecField
+
+
+-- ------------------------------------------------------------
+-- Probe E1 (03, HIGH) — dependent sibling field types.
+-- Prediction: `subst h` chain should carry type equalities;
+-- untested and one of the higher-risk items.
+-- ------------------------------------------------------------
+namespace Probe_E1_DepSibling
+mutual
+inductive DepT where
+  | mk : (n : Nat) → Fin n → Fin n → DepT
+end
+derive_deceq DepT
+example (a b : DepT) : Decidable (a = b) := inferInstance
+#guard DepT.mk 2 ⟨0, by decide⟩ ⟨1, by decide⟩ == DepT.mk 2 ⟨0, by decide⟩ ⟨1, by decide⟩
+#guard !(DepT.mk 2 ⟨0, by decide⟩ ⟨1, by decide⟩ == DepT.mk 2 ⟨1, by decide⟩ ⟨1, by decide⟩)
+end Probe_E1_DepSibling
+
+
+-- ------------------------------------------------------------
+-- Probe E3 (03, MEDIUM) — heterogeneous-arity mutual block.
+-- Different index arity per mutual member.
+-- ------------------------------------------------------------
+namespace Probe_E3_HetIndices
+mutual
+inductive Plain where
+  | a
+  | b : Plain → Plain
+inductive Idx : Nat → Type where
+  | mk   : Plain → Idx 0
+  | wrap : Idx n → Idx (n+1)
+end
+derive_deceq Plain
+#guard Plain.a == Plain.a
+#guard !(Plain.a == Plain.b Plain.a)
+end Probe_E3_HetIndices
+
+
+-- ------------------------------------------------------------
+-- Probe E5 — private inductive. FIXED: the analyzer demangles
+-- `_private.<mod>.<hash>.Hidden` back to user name `Hidden` for
+-- `defBaseNames`, and `mkDecEqFunc` emits `private def` when
+-- the source inductive is private, so Lean re-mangles both the
+-- def and the resulting instance consistently.
+-- ------------------------------------------------------------
+namespace Probe_E5_Private
+private inductive Hidden where
+  | a
+  | b
+derive_deceq Hidden
+example (x y : Hidden) : Decidable (x = y) := inferInstance
+#guard Hidden.a == Hidden.a
+#guard !(Hidden.a == Hidden.b)
+end Probe_E5_Private
+
+
+-- ------------------------------------------------------------
+-- Probe E9 (03, LOW) — phantom type parameter.
+-- Prediction: deriver still requires [DecidableEq α].
+-- ------------------------------------------------------------
+namespace Probe_E9_Phantom
+mutual
+inductive Phantom (α : Type) where
+  | mk : Nat → Phantom α
+end
+derive_deceq Phantom
+example : DecidableEq (Phantom Nat) := inferInstance
+end Probe_E9_Phantom
+
+
+-- ------------------------------------------------------------
+-- Probe E12 (03, LOW) — container-of-inductive as type param.
+-- Prediction: works as normal typeclass synthesis at use site.
+-- ------------------------------------------------------------
+namespace Probe_E12_ContainerParam
+inductive Bar2 where
+  | b1
+  | b2
+mutual
+inductive Foo2 (α : Type) where
+  | f  : α → Foo2 α
+  | nf : List (Foo2 α) → Foo2 α
+end
+derive_deceq Foo2
+derive_deceq Bar2
+example (a b : Foo2 (List Bar2)) : Decidable (a = b) := inferInstance
+end Probe_E12_ContainerParam
