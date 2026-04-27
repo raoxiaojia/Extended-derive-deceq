@@ -7,6 +7,6 @@
 *.o
 lake-manifest.json
 
-# Local tooling artifacts (audit reports, Claude Code state, etc.)
+# Local tooling artifacts
 /audit/
 /.claude/

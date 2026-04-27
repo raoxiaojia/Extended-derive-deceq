@@ -50,13 +50,11 @@ def testZ (a b : Z) : Bool := a == b
 end Test2
 
 -- ============================================================
--- Test 3: Mutual with List nesting (single container type)
+-- Test 3: Single inductive with List nesting
 -- ============================================================
 namespace Test3
 
-mutual
 inductive Tree where | node : List Tree → Tree | tip : Nat → Tree
-end
 
 derive_deceq Tree
 
@@ -197,11 +195,9 @@ end Test8
 -- ============================================================
 namespace Test9
 
-mutual
 inductive Node where
   | leaf : Nat → Node
   | branch : List Node → Option Node → Node
-end
 
 derive_deceq Node
 
@@ -224,12 +220,10 @@ inductive MyList (α : Type) where
   | nil : MyList α
   | cons : α → MyList α → MyList α
 
-mutual
 inductive Expr2 where
   | lit : Nat → Expr2
   | add : Expr2 → Expr2 → Expr2
   | block : MyList Expr2 → Expr2
-end
 
 derive_deceq Expr2
 
@@ -243,14 +237,9 @@ def testExpr2 (a b : Expr2) : Bool := a == b
 end Test10
 
 -- ============================================================
--- Test 11: (reserved for large mutual block stress tests)
+-- Test 11: Parametric mutual inductive (type parameter α)
+-- ============================================================
 namespace Test11
-end Test11
-
--- ============================================================
--- Test 12: Parametric mutual inductive (type parameter α)
--- ============================================================
-namespace Test12
 
 mutual
 inductive Foo (α : Type) where
@@ -269,18 +258,16 @@ def testBar (a b : Bar Nat) : Bool := a == b
 #guard Foo.leaf 1 == Foo.leaf 1
 #guard !(Bar.pair (Foo.leaf 1) (Foo.leaf 2) == Bar.pair (Foo.leaf 1) (Foo.leaf 3))
 
-end Test12
+end Test11
 
 -- ============================================================
--- Test 13: Parametric with List nesting
+-- Test 12: Parametric with List nesting
 -- ============================================================
-namespace Test13
+namespace Test12
 
-mutual
 inductive Tree (α : Type) where
   | tip : α → Tree α
   | node : List (Tree α) → Tree α
-end
 
 derive_deceq Tree
 
@@ -289,13 +276,13 @@ def testTree (a b : Tree String) : Bool := a == b
 #guard Tree.node [Tree.tip "a", Tree.tip "b"] == Tree.node [Tree.tip "a", Tree.tip "b"]
 #guard !(Tree.node [Tree.tip "a"] == Tree.node [Tree.tip "b"])
 
-end Test13
+end Test12
 
 -- ============================================================
--- Test 14: Mutual + deep nesting + custom container
+-- Test 13: Mutual + deep nesting + custom container
 -- (List, List-of-List, List-of-List-of-List, custom MyList, mutual MLabel)
 -- ============================================================
-namespace Test14
+namespace Test13
 
 inductive MyList (α : Type) where
   | nil : MyList α
@@ -350,7 +337,7 @@ def testMLabel (a b : MLabel) : Bool := a == b
 #guard !(MTree.labelled (.named "root" (.leaf 1)) ==
          MTree.labelled (.named "root" (.leaf 2)))
 
-end Test14
+end Test13
 
 -- ============================================================
 -- Indexed family tests
@@ -360,17 +347,15 @@ end Test14
 -- ============================================================
 -- Test I1: Indexed + parametric (α parameter + Nat index)
 --
--- deriving BEq:          ✓ (on mutual-wrapped)
--- deriving DecidableEq:  ✓ (on mutual-wrapped, no nesting)
+-- deriving BEq:          ✓
+-- deriving DecidableEq:  ✓ (no nesting)
 -- derive_deceq:          ✓
 -- ============================================================
 namespace TestI1
 
-mutual
 inductive ParamVec (α : Type) : Nat → Type where
   | nil : ParamVec α 0
   | cons : α → ParamVec α n → ParamVec α (n + 1)
-end
 
 derive_deceq ParamVec
 
@@ -385,20 +370,19 @@ def test (a b : ParamVec Nat n) : Bool := a == b
 end TestI1
 
 -- ============================================================
--- Test I2: Indexed + parametric + nested (List) with same index
--- (kernel promotes index to parameter; our non-indexed path)
+-- Test I2: Indexed + parametric + nested (List) with same index.
+-- The kernel promotes a same-index field-and-return position into
+-- a parameter, so this looks non-indexed to the deriver.
 --
 -- deriving BEq:          ✓
--- deriving DecidableEq:  ✗ (mutual + nested)
+-- deriving DecidableEq:  ✗ (nested)
 -- derive_deceq:          ✓
 -- ============================================================
 namespace TestI2
 
-mutual
 inductive Forest (α : Type) : Nat → Type where
   | leaf : α → Forest α n
   | branch : List (Forest α n) → Forest α n
-end
 
 derive_deceq Forest
 
@@ -422,12 +406,10 @@ namespace TestI3
 inductive Phase where | parse | check | emit
   deriving DecidableEq
 
-mutual
 inductive IR : Phase → Type where
   | raw : String → IR .parse
   | typed : Nat → IR .check
   | code : String → Nat → IR .emit
-end
 
 derive_deceq IR
 
@@ -451,7 +433,6 @@ end TestI3
 -- ============================================================
 namespace TestI4
 
-mutual
 inductive MultiCtor : Nat → Type where
   | a0 : MultiCtor 0
   | b0 : Nat → MultiCtor 0
@@ -459,7 +440,6 @@ inductive MultiCtor : Nat → Type where
   | b1 : MultiCtor 1
   | a2 : Nat → Nat → MultiCtor 2
   | b2 : String → MultiCtor 2
-end
 
 derive_deceq MultiCtor
 
@@ -476,8 +456,7 @@ derive_deceq MultiCtor
 end TestI4
 
 -- ============================================================
--- Test I5: Indexed + Prop field (combining A6 and A7)
--- An indexed type where one field is Prop-typed.
+-- Test I5: Indexed type with one Prop-typed field.
 --
 -- deriving BEq:          ✓
 -- deriving DecidableEq:  ✓ (no nesting)
@@ -487,10 +466,8 @@ namespace TestI5
 
 axiom WF : Nat → Prop
 
-mutual
 inductive Checked : Nat → Type where
   | mk : (val : Nat) → WF n → Checked n
-end
 
 derive_deceq Checked
 
@@ -507,12 +484,10 @@ end TestI5
 -- ============================================================
 namespace TestI6
 
-mutual
 inductive Bits : Nat → Type where
   | done : Bits 0
   | zero : Bits n → Bits (n + 1)
   | one : Bits n → Bits (n + 1)
-end
 
 derive_deceq Bits
 
@@ -539,12 +514,10 @@ end TestI6
 -- ============================================================
 namespace TestI7
 
-mutual
 inductive Grid (α : Type) : Nat → Nat → Type where
   | empty : Grid α 0 0
   | cell : α → Grid α m n → Grid α m (n + 1)
   | row : Grid α m n → Grid α (m + 1) 0
-end
 
 derive_deceq Grid
 
@@ -567,12 +540,10 @@ end TestI7
 -- ============================================================
 namespace TestI8
 
-mutual
 inductive Token : Bool → Type where
   | keyword : String → Token true
   | ident : String → Token false
   | number : Nat → Token false
-end
 
 derive_deceq Token
 
@@ -585,20 +556,17 @@ derive_deceq Token
 end TestI8
 
 -- ============================================================
--- Test I9: Indexed + Option nesting with same index
--- (kernel promotes index to parameter)
+-- Test I9: Indexed + Option nesting with same index.
 --
 -- deriving BEq:          ✓
--- deriving DecidableEq:  ✗ (mutual + nested)
+-- deriving DecidableEq:  ✗ (nested)
 -- derive_deceq:          ✓
 -- ============================================================
 namespace TestI9
 
-mutual
 inductive OptTree : Nat → Type where
   | leaf : Nat → OptTree n
   | node : Nat → Option (OptTree n) → Option (OptTree n) → OptTree n
-end
 
 derive_deceq OptTree
 
@@ -650,11 +618,9 @@ end TestI10
 -- ============================================================
 namespace TestI11
 
-mutual
 inductive Tensor : Nat → Nat → Nat → Type where
   | scalar : Nat → Tensor 0 0 0
   | vec : Nat → Tensor a b c → Tensor a b (c + 1)
-end
 
 derive_deceq Tensor
 
@@ -679,10 +645,10 @@ end TestI11
 --   • direct recursion (Cmd.seq)
 --   • non-recursive constructors (Cmd.ret, Fun.ext)
 --
--- Note: container nesting + genuine index-changing recursion is
+-- Container nesting + genuine index-changing recursion is
 -- incompatible at the kernel level (nested inductive parameters
 -- cannot contain local variables), so indices are omitted here.
--- Index-changing recursion is tested separately in I7.
+-- Index-changing recursion is exercised separately in Test I7.
 --
 -- derive_deceq:          ✓
 -- ============================================================
@@ -753,20 +719,17 @@ derive_deceq Cmd
 end TestI12
 
 -- ============================================================
--- Test I13: Array container nesting
--- Tests whether derive_deceq handles Array nesting. The kernel
--- compiles Array as a structure wrapping List, so nesting through
--- Array should produce auxiliary types similar to List nesting.
+-- Test I13: Array container nesting. Array is a structure
+-- wrapping List in the kernel, so nesting through Array should
+-- produce auxiliary types similar to List nesting.
 --
--- derive_deceq:          ?
+-- derive_deceq:          ✓
 -- ============================================================
 namespace TestI13
 
-mutual
 inductive ATree where
   | leaf : Nat → ATree
   | node : Array ATree → ATree
-end
 
 derive_deceq ATree
 
@@ -779,25 +742,17 @@ derive_deceq ATree
 end TestI13
 
 -- ============================================================
--- Audit tests (Prop fields, proof irrelevance)
+-- Prop-typed field (proof irrelevance).
+-- Lean's built-in deriver skips Prop-typed fields by exploiting
+-- proof irrelevance (all proofs of a Prop are equal); this
+-- deriver does the same.
 -- ============================================================
-
-
--- ============================================================
--- Test A6: Prop-typed field (proof irrelevance)
---
--- Lean's built-in deriver skips Prop-typed fields via `isProp`,
--- exploiting proof irrelevance (all proofs of a Prop are equal).
--- Our deriver now does the same.
--- ============================================================
-namespace TestA6
+namespace TestPropTypedField
 
 inductive Witness : Prop where | intro
 
-mutual
 inductive Tagged where
   | mk : Nat → Witness → Tagged
-end
 
 derive_deceq Tagged
 
@@ -806,23 +761,21 @@ def testTagged (a b : Tagged) : Bool := a == b
 #guard Tagged.mk 1 .intro == Tagged.mk 1 .intro
 #guard !(Tagged.mk 1 .intro == Tagged.mk 2 .intro)
 
-end TestA6
+end TestPropTypedField
 
 -- ============================================================
--- Test A6b: Multiple Prop fields alongside non-Prop fields
--- (Single-constructor all-Prop inductives auto-become Prop,
--- so we use two constructors to keep the type in Type.)
+-- Multiple Prop fields alongside non-Prop fields.
+-- A single-constructor all-Prop inductive auto-becomes Prop, so
+-- we use two constructors to keep the type in Type.
 -- ============================================================
-namespace TestA6b
+namespace TestMultiplePropFields
 
 inductive P1 : Prop where | intro
 inductive P2 : Prop where | intro
 
-mutual
 inductive AllProp where
   | mk1 : P1 → P2 → AllProp
   | mk2 : P1 → AllProp
-end
 
 derive_deceq AllProp
 
@@ -831,34 +784,30 @@ def testAllProp (a b : AllProp) : Bool := a == b
 #guard AllProp.mk1 .intro .intro == AllProp.mk1 .intro .intro
 #guard !(AllProp.mk1 .intro .intro == AllProp.mk2 .intro)
 
-end TestA6b
+end TestMultiplePropFields
 
 -- ============================================================
--- Test A6c: Mixed Prop and non-Prop fields
+-- Mixed Prop and non-Prop fields in one constructor.
 -- ============================================================
-namespace TestA6c
+namespace TestPropAndDataFields
 
 axiom MyInvariant : Nat → Prop
 
-mutual
 inductive Guarded where
   | mk : (n : Nat) → MyInvariant n → String → Guarded
-end
 
 derive_deceq Guarded
 
-end TestA6c
+end TestPropAndDataFields
 
 -- ============================================================
--- Test A7: Indexed inductive family (single index)
+-- Single-index inductive family (Nat-indexed).
 -- ============================================================
-namespace TestA7
+namespace TestNatIndexed
 
-mutual
 inductive IVec : Nat → Type where
   | nil : IVec 0
   | cons : Nat → IVec n → IVec (n + 1)
-end
 
 derive_deceq IVec
 
@@ -869,19 +818,17 @@ def testIVec (a b : IVec n) : Bool := a == b
 #guard !(IVec.cons 1 .nil == IVec.cons 2 .nil)
 #guard !(IVec.cons 1 (IVec.cons 2 .nil) == IVec.cons 1 (IVec.cons 3 .nil))
 
-end TestA7
+end TestNatIndexed
 
 -- ============================================================
--- Test A7b: Indexed family with multiple constructors at same index
+-- Bool-indexed family with multiple constructors per index.
 -- ============================================================
-namespace TestA7b
+namespace TestBoolIndexed
 
-mutual
 inductive Tagged : Bool → Type where
   | a : Nat → Tagged true
   | b : String → Tagged true
   | c : Tagged false
-end
 
 derive_deceq Tagged
 
@@ -892,18 +839,16 @@ def testTagged (a b : Tagged t) : Bool := a == b
 #guard !(Tagged.a 1 == Tagged.b "x")
 #guard Tagged.c == Tagged.c
 
-end TestA7b
+end TestBoolIndexed
 
 -- ============================================================
--- Test A7c: Two-index family
+-- Two-index family.
 -- ============================================================
-namespace TestA7c
+namespace TestTwoIndexFamily
 
-mutual
 inductive Matrix : Nat → Nat → Type where
   | empty : Matrix 0 0
   | cell : Nat → Matrix m n → Matrix m (n + 1)
-end
 
 derive_deceq Matrix
 
@@ -911,19 +856,18 @@ derive_deceq Matrix
 #guard Matrix.cell 5 .empty == Matrix.cell 5 .empty
 #guard !(Matrix.cell 5 .empty == Matrix.cell 6 .empty)
 
-end TestA7c
+end TestTwoIndexFamily
 
 -- ============================================================
--- Test A7d: Indexed + nested with same index (kernel promotes
--- index to parameter, so our non-indexed path handles it)
+-- Indexed family nesting through a container at the same index
+-- (the kernel promotes the index to a parameter for the auxiliary
+-- container motive).
 -- ============================================================
-namespace TestA7d
+namespace TestIndexedContainerSameIndex
 
-mutual
 inductive STree : Nat → Type where
   | leaf : Nat → STree n
   | node : List (STree n) → STree n
-end
 
 derive_deceq STree
 
@@ -934,25 +878,20 @@ def testSTree (a b : STree n) : Bool := a == b
 #guard STree.node [STree.leaf 1, STree.leaf 2] == (STree.node [STree.leaf 1, STree.leaf 2] : STree 3)
 #guard !(STree.node [STree.leaf 1] == (STree.node [STree.leaf 2] : STree 3))
 
-end TestA7d
+end TestIndexedContainerSameIndex
 
 -- ============================================================
--- Regression: explicit binder appearing in the return type.
---
--- `analyzeRecursor` records every explicit non-IH binder as an entry
--- in `ctor.fields`. `mkSameCtorAlt` must advance its cursor into
--- `ctor.fields` for every explicit binder — fixed or free — otherwise
--- a ctor like `mk : (n : Nat) → T n → Bool → T n` (with `n` explicit
--- and in the return type) causes subsequent fields to read the wrong
--- `FieldInfo` entries, losing `recursiveMotiveIdx`.
+-- Constructor with an explicit binder that also appears in the
+-- return type, e.g. `mk : (n : Nat) → T n → Bool → T n`.
+-- Both the recursive `T n` field and the trailing `Bool` must be
+-- compared correctly when the index `n` is shared between the two
+-- sides of the comparison.
 -- ============================================================
 namespace TestExplicitIndexInReturn
 
-mutual
 inductive T : Nat → Type where
   | leaf : T n
   | mk : (n : Nat) → T n → Bool → T n
-end
 
 derive_deceq T
 
@@ -968,233 +907,155 @@ def testT {n : Nat} (a b : T n) : Bool := a == b
 end TestExplicitIndexInReturn
 
 -- ============================================================
--- AUDIT PROBES
--- Each namespace probes one suspected finding from audit/.
--- Build result is the ground truth for whether the finding is real.
--- Pattern: `Probe_<id>_<shortname>`. ID references audit report.
+-- Edge-shape regression tests
 -- ============================================================
 
 
--- ------------------------------------------------------------
--- Probe F1 (01, HIGH) — universe polymorphism.
--- Prediction: generated def may not thread universe params.
--- ------------------------------------------------------------
-namespace Probe_F1_UnivPoly
+-- Universe-polymorphic type parameter.
+namespace TestUnivPoly
 universe u
-mutual
 inductive UTree (α : Type u) where
   | leaf : α → UTree α
   | node : List (UTree α) → UTree α
-end
 derive_deceq UTree
 example (a b : UTree Nat) : Decidable (a = b) := inferInstance
-end Probe_F1_UnivPoly
+end TestUnivPoly
 
 
--- ------------------------------------------------------------
--- Probe F3 — higher-order recursive argument. FIXED: the analyzer
--- now detects field types `A → ... → T` where `T` is in the
--- mutual group and fails early with a targeted diagnostic.
--- DecidableEq on a function space is undecidable, so this is the
--- best the deriver can do.
--- ------------------------------------------------------------
-namespace Probe_F3_HigherOrderIH
-mutual
+-- Higher-order recursive argument: `DecidableEq` on a function space
+-- is undecidable, so the deriver rejects this with a clear error.
+namespace TestHigherOrderRecursive
 inductive Wrec where
   | sup : (Nat → Wrec) → Wrec
   | leaf : Wrec
-end
 /--
-error: derive_deceq: constructor Probe_F3_HigherOrderIH.Wrec.sup has a higher-order recursive argument of type
+error: derive_deceq: constructor TestHigherOrderRecursive.Wrec.sup has a higher-order recursive argument of type
   Nat → Wrec
 DecidableEq on a function space is not decidable.
 -/
 #guard_msgs (whitespace := lax) in
 derive_deceq Wrec
-end Probe_F3_HigherOrderIH
+end TestHigherOrderRecursive
 
 
--- ------------------------------------------------------------
--- Probe F5a — empty inductive (0 constructors). FIXED: the
--- deriver now short-circuits on `ctors.isEmpty` and emits
--- `nomatch aId`.
--- ------------------------------------------------------------
-namespace Probe_F5a_Empty
-mutual
+-- Empty inductive: no inhabitant, equality is vacuously decidable.
+namespace TestEmpty
 inductive Void0 : Type
-end
 derive_deceq Void0
 example (a b : Void0) : Decidable (a = b) := inferInstance
-end Probe_F5a_Empty
+end TestEmpty
 
 
--- ------------------------------------------------------------
--- Probe F5b — Prop-valued inductive. FIXED: the deriver detects
--- inductives whose resultant sort is `Prop` and emits
--- `isTrue rfl` (valid by definitional proof irrelevance).
--- ------------------------------------------------------------
-namespace Probe_F5b_PropInd
-mutual
+-- Prop-valued inductive: every `a = b` holds by proof irrelevance.
+namespace TestPropInductive
 inductive MyProp : Prop where
   | a
   | b
-end
 derive_deceq MyProp
 example (x y : MyProp) : Decidable (x = y) := inferInstance
-end Probe_F5b_PropInd
+end TestPropInductive
 
 
--- ------------------------------------------------------------
--- Probe F6 (01, MEDIUM) — multi-parameter container nesting.
--- Prediction: aux motive param delab may miss scope.
--- ------------------------------------------------------------
-namespace Probe_F6_MultiParamContainer
+-- Nesting through a container parameterised by more than one type.
+namespace TestMultiParamContainer
 inductive Pair2 (α β : Type) where
   | mk : α → β → Pair2 α β
-mutual
 inductive E6 where
   | wrap : Pair2 E6 E6 → E6
   | tip : Nat → E6
-end
 derive_deceq E6
 example (a b : E6) : Decidable (a = b) := inferInstance
-end Probe_F6_MultiParamContainer
+end TestMultiParamContainer
 
 
--- ------------------------------------------------------------
--- Probe F9 (01, LOW) — Prop-via-universe (Sort u with u := 0).
--- Prediction: isProp false at analysis; `DecidableEq p` unsynth.
--- ------------------------------------------------------------
-namespace Probe_F9_PropViaUniv
+-- Type parameter in `Sort u` — works as long as the user can supply
+-- `DecidableEq` for the chosen instantiation.
+namespace TestPropViaUniverse
 universe u
-mutual
 inductive Boxed (p : Sort u) where
   | mk : Nat → p → Boxed p
-end
 derive_deceq Boxed
-end Probe_F9_PropViaUniv
+end TestPropViaUniverse
 
 
--- ------------------------------------------------------------
--- Probe F10 (01, LOW) — single-ctor indexed family.
--- Prediction: sameCtorCall + indexed motive workaround combo.
--- ------------------------------------------------------------
-namespace Probe_F10_SingleCtorIndexed
-mutual
+-- Single-constructor indexed family.
+namespace TestSingleCtorIndexed
 inductive Single : Nat → Type where
   | only : (n : Nat) → Single n
-end
 derive_deceq Single
 example : Decidable ((Single.only 0 : Single 0) = Single.only 0) := inferInstance
-end Probe_F10_SingleCtorIndexed
+end TestSingleCtorIndexed
 
 
--- ------------------------------------------------------------
--- Probe C1 (02, LOW) — two fixed-explicit binders in one ctor.
--- Prediction: should work post-fix. No existing test.
--- ------------------------------------------------------------
-namespace Probe_C1_MultiFixedExplicit
-mutual
+-- Two fixed-explicit binders (both `m` and `n` appear in the return).
+namespace TestMultipleFixedExplicit
 inductive P2 : Nat → Nat → Type where
   | nil : P2 0 0
   | mk  : (m n : Nat) → P2 m n → Bool → P2 m n
-end
 derive_deceq P2
 #guard (P2.mk 0 0 .nil true) == (P2.mk 0 0 .nil true)
 #guard !((P2.mk 0 0 .nil true) == (P2.mk 0 0 .nil false))
-end Probe_C1_MultiFixedExplicit
+end TestMultipleFixedExplicit
 
 
--- ------------------------------------------------------------
--- Probe C2 (02, LOW) — fixed-explicit Prop binder.
--- Prediction: cursor advances; Prop field skipped by motive.
--- ------------------------------------------------------------
-namespace Probe_C2_FixedExplicitProp
-axiom Inv_C2 : Nat → Prop
-mutual
+-- Fixed-explicit binder followed by a Prop-valued field.
+namespace TestFixedExplicitProp
+axiom Inv : Nat → Prop
 inductive Wit : Nat → Type where
-  | mk : (n : Nat) → (h : Inv_C2 n) → Bool → Wit n
-end
+  | mk : (n : Nat) → (h : Inv n) → Bool → Wit n
 derive_deceq Wit
-end Probe_C2_FixedExplicitProp
+end TestFixedExplicitProp
 
 
--- ------------------------------------------------------------
--- Probe C3 (02, LOW) — fixed-implicit index + free-explicit rec.
--- (Audit 4.3 case — included as labeled by the auditor.)
--- ------------------------------------------------------------
-namespace Probe_C3_SpineShape
-mutual
+-- Recursive field where the index is a free implicit.
+namespace TestFreeImplicitRecursive
 inductive Spine : Nat → Type where
   | tip  : Spine 0
   | wrap : (s : Spine n) → Bool → Spine n
-end
 derive_deceq Spine
-end Probe_C3_SpineShape
+end TestFreeImplicitRecursive
 
 
--- ------------------------------------------------------------
--- Probe C4 (02, LOW) — mix of fixed-explicit + free implicit.
--- Prediction: tightest test for cursor drift.
--- ------------------------------------------------------------
-namespace Probe_C4_MixFixedFreeImplicit
-mutual
+-- Mix of fixed-explicit and free-implicit binders in one ctor.
+namespace TestFixedAndFreeImplicit
 inductive Mix : Nat → Type where
   | nilM : Mix 0
   | mkM  : {k : Nat} → (n : Nat) → Mix n → Mix k → Bool → Mix n
-end
 derive_deceq Mix
-end Probe_C4_MixFixedFreeImplicit
+end TestFixedAndFreeImplicit
 
 
--- ------------------------------------------------------------
--- Probe C6 — F4: implicit *user* recursive field. FIXED: the
--- analyzer now records a `FieldInfo` entry for implicit binders
--- that are not fixed and not referenced in any other user binder
--- (i.e. genuinely free user fields like `{child : Bad}`), and
--- `mkSameCtorAlt` advances its cursor to match.
--- The Lean lint `unused variable child` still fires on the
--- inductive declaration itself — suppressed locally below, since
--- it's a signal from the user's code, not the deriver.
--- ------------------------------------------------------------
-namespace Probe_C6_ImplicitRecField
+-- Implicit user-level field that is itself the inductive type.
+-- `{child}` is a real field used by the comparison even though the
+-- `unusedVariables` linter on the declaration cannot tell.
+namespace TestImplicitRecursiveField
 set_option linter.unusedVariables false in
-mutual
 inductive Bad where
   | mk : {child : Bad} → Nat → Bad
   | leaf : Bad
-end
 derive_deceq Bad
 example (x y : Bad) : Decidable (x = y) := inferInstance
 #guard (Bad.mk (child := Bad.leaf) 1) == Bad.mk (child := Bad.leaf) 1
 #guard !((Bad.mk (child := Bad.leaf) 1) == Bad.mk (child := Bad.leaf) 2)
 #guard !((Bad.mk (child := Bad.leaf) 1)
     == Bad.mk (child := Bad.mk (child := Bad.leaf) 0) 1)
-end Probe_C6_ImplicitRecField
+end TestImplicitRecursiveField
 
 
--- ------------------------------------------------------------
--- Probe E1 (03, HIGH) — dependent sibling field types.
--- Prediction: `subst h` chain should carry type equalities;
--- untested and one of the higher-risk items.
--- ------------------------------------------------------------
-namespace Probe_E1_DepSibling
-mutual
+-- Dependent sibling fields: the type of a later field refers to an
+-- earlier one. Relies on the `subst`-chain comparison.
+namespace TestDependentSibling
 inductive DepT where
   | mk : (n : Nat) → Fin n → Fin n → DepT
-end
 derive_deceq DepT
 example (a b : DepT) : Decidable (a = b) := inferInstance
 #guard DepT.mk 2 ⟨0, by decide⟩ ⟨1, by decide⟩ == DepT.mk 2 ⟨0, by decide⟩ ⟨1, by decide⟩
 #guard !(DepT.mk 2 ⟨0, by decide⟩ ⟨1, by decide⟩ == DepT.mk 2 ⟨1, by decide⟩ ⟨1, by decide⟩)
-end Probe_E1_DepSibling
+end TestDependentSibling
 
 
--- ------------------------------------------------------------
--- Probe E3 (03, MEDIUM) — heterogeneous-arity mutual block.
--- Different index arity per mutual member.
--- ------------------------------------------------------------
-namespace Probe_E3_HetIndices
+-- Mutual block where members have different index arities.
+namespace TestHeterogeneousIndices
 mutual
 inductive Plain where
   | a
@@ -1206,17 +1067,12 @@ end
 derive_deceq Plain
 #guard Plain.a == Plain.a
 #guard !(Plain.a == Plain.b Plain.a)
-end Probe_E3_HetIndices
+end TestHeterogeneousIndices
 
 
--- ------------------------------------------------------------
--- Probe E5 — private inductive. FIXED: the analyzer demangles
--- `_private.<mod>.<hash>.Hidden` back to user name `Hidden` for
--- `defBaseNames`, and `mkDecEqFunc` emits `private def` when
--- the source inductive is private, so Lean re-mangles both the
--- def and the resulting instance consistently.
--- ------------------------------------------------------------
-namespace Probe_E5_Private
+-- `private` inductive: the generated `def` and instance are also
+-- private, matching Lean's name mangling for the source type.
+namespace TestPrivateInductive
 private inductive Hidden where
   | a
   | b
@@ -1224,37 +1080,28 @@ derive_deceq Hidden
 example (x y : Hidden) : Decidable (x = y) := inferInstance
 #guard Hidden.a == Hidden.a
 #guard !(Hidden.a == Hidden.b)
-end Probe_E5_Private
+end TestPrivateInductive
 
 
--- ------------------------------------------------------------
--- Probe E9 (03, LOW) — phantom type parameter.
--- Prediction: deriver still requires [DecidableEq α].
--- ------------------------------------------------------------
-namespace Probe_E9_Phantom
-mutual
+-- Phantom type parameter (`α` appears nowhere in the ctors).
+namespace TestPhantomParam
 inductive Phantom (α : Type) where
   | mk : Nat → Phantom α
-end
 derive_deceq Phantom
 example : DecidableEq (Phantom Nat) := inferInstance
-end Probe_E9_Phantom
+end TestPhantomParam
 
 
--- ------------------------------------------------------------
--- Probe E12 (03, LOW) — container-of-inductive as type param.
--- Prediction: works as normal typeclass synthesis at use site.
--- ------------------------------------------------------------
-namespace Probe_E12_ContainerParam
+-- Instantiating a parametric derived type at a container of another
+-- derived type.
+namespace TestContainerOfInductiveParam
 inductive Bar2 where
   | b1
   | b2
-mutual
 inductive Foo2 (α : Type) where
   | f  : α → Foo2 α
   | nf : List (Foo2 α) → Foo2 α
-end
 derive_deceq Foo2
 derive_deceq Bar2
 example (a b : Foo2 (List Bar2)) : Decidable (a = b) := inferInstance
-end Probe_E12_ContainerParam
+end TestContainerOfInductiveParam

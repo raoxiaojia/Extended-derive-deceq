@@ -13,18 +13,23 @@
 
   Assumptions about Lean's recursor shape:
 
-  1. The recursor type is a flat forall chain: params, then motives, then minors.
-     `numParams`, `numMotives`, `numMinors` correctly partition this chain.
+  1. The recursor type is the forall chain
+     `params → motives → minors → indices → major → result`; we only need to
+     peel `numParams`, `numMotives`, and `numMinors` binders, which are
+     partitioned cleanly at the front.
 
   2. For nested container types (e.g. `List Expr`), the kernel generates
      auxiliary motives with their own minors (e.g. `List.nil`, `List.cons`).
 
   Approach:
-  1. Analyze the recursor to discover the full mutual block structure
-  2. Generate `casesOnSameCtor` helpers for each motive's underlying inductive
-  3. For each motive, generate a comparison function using ctorIdx dispatch
-  4. Wrap all defs in `mutual ... end` for the equation compiler
-  5. Register DecidableEq instances for user types
+  1. Analyze the recursor to discover the full mutual block structure.
+  2. Generate `casesOnSameCtor` helpers for each non-`Prop` motive
+     (`Prop`-valued inductives short-circuit in step 3).
+  3. For each motive, generate a comparison function. Most motives use
+     `ctorIdx` dispatch with a `casesOnSameCtor` body; empty inductives
+     emit `nomatch`, and `Prop`-valued inductives emit `isTrue rfl`.
+  4. Wrap all defs in `mutual ... end` for the equation compiler.
+  5. Register DecidableEq instances for user types.
 -/
 import Lean
 import Lean.Elab.Deriving.Util
@@ -94,6 +99,13 @@ private def extractBinderInfos (type : Expr) (n : Nat) : Array BinderInfo := Id.
       rest := body
     | _ => break
   return result
+
+/-- Is the inductive `indName` Prop-valued (i.e. its resultant sort is `Prop`)? -/
+private def isPropInductive (indName : Name) : MetaM Bool := do
+  let indVal ← getConstInfoInduct indName
+  return match indVal.type.getForallBody with
+    | .sort l => l.isZero
+    | _ => false
 
 /-- Name for the decEq function of a given motive.
     Uses namespace-stripped `defBaseNames` so that `def <name>` inside the
@@ -214,15 +226,19 @@ def analyzeRecursor (indName : Name) : MetaM RecursorAnalysis := do
 
         -- After motives, the recursor has one minor per constructor across all
         -- types in the mutual block.  Each minor has type:
-        --   (implicit-index-binders...) → (field₁ : T₁) → (ih₁ : motive field₁) →
-        --     (field₂ : T₂) → ... → motive_j (Ctor field₁ field₂ ...)
+        --   (implicit-binders...) → (field₁ : T₁) → (ih₁ : motive field₁) →
+        --     (field₂ : T₂) → ... → motive_j (Ctor ...)
+        -- where the leading implicit binders are either ctor indices or
+        -- genuinely free implicit user fields (see step (c) below).
         --
         -- For each minor we:
         --   (a) Identify which motive (= which type) it belongs to, by checking
         --       which motive fvar appears in the return type.
         --   (b) Extract the constructor name from the return type's ctor application.
-        --   (c) Classify explicit binders as data fields vs induction hypotheses (IHs).
-        --       Implicit binders are index parameters inserted by the recursor — skip them.
+        --   (c) Classify each binder as an IH (explicit, type head is a motive),
+        --       a data field (explicit non-IH, or implicit binder that is neither
+        --       fixed in the ctor's return type nor referenced by another user
+        --       binder), or an index (everything else — skipped).
         --   (d) Map each IH back to the data field it provides a recursive proof for.
         --   (e) Flag Prop-typed fields (compared by proof irrelevance, not structurally).
         let ctorsByType ←
@@ -244,16 +260,21 @@ def analyzeRecursor (indName : Name) : MetaM RecursorAnalysis := do
                   let .const ctorName _ := ctorApp.getAppFn
                     | throwError "derive_deceq: expected constructor application, got {ctorApp}"
 
-                  -- (c) Classify binders into fields and IHs.
-                  --     Implicit binders are index parameters inserted by the recursor
-                  --     (e.g. {n : Nat} for `Bits : Nat → Type`) — skip them.
-                  --     Among explicit binders, those whose type head is a motive fvar
-                  --     are IHs; the rest are data fields.
+                  -- (c) Classify each binder:
+                  --       IH         — explicit, type head is a motive fvar.
+                  --       data field — explicit non-IH, or implicit binder that
+                  --                    is neither fixed in the ctor's own return
+                  --                    type nor referenced by another user
+                  --                    binder (a genuinely free implicit field).
+                  --       index      — implicit binder fixed in the return type
+                  --                    or determined by another binder (skip).
                   -- Walk the ctor's own type to get "is fixed in ctor's true
                   -- return type" per user binder. The minor's retType always
                   -- mentions every user binder via the ctor application, so
                   -- it cannot be used for the "is index" decision; we need
-                  -- the ctor's own return type (e.g. `Bits (n+1)` vs `Bad`).
+                  -- the ctor's own return type — e.g. an indexed `T (n+1)`
+                  -- (where `n` is fixed by the index) vs a non-indexed `T`
+                  -- (where no binder is fixed by the return).
                   let ctorConstInfo ← getConstInfoCtor ctorName
                   let ctorFixedFlags ← forallTelescopeReducing ctorConstInfo.type
                     fun ctorFvars ctorRetType => do
@@ -279,8 +300,9 @@ def analyzeRecursor (indName : Name) : MetaM RecursorAnalysis := do
                       ctorFixedFlags[userBinderIdx]?.getD false
                     userBinderIdx := userBinderIdx + 1
                     if ldecl.binderInfo == .default then
-                      -- Explicit data field
-                      -- F3: higher-order recursive argument.
+                      -- Explicit data field. Reject higher-order recursive
+                      -- arguments — DecidableEq on a function space is
+                      -- undecidable in general.
                       if xType.isForall then
                         let codomainHead := xType.getForallBody.getAppFn
                         if let .const cname _ := codomainHead then
@@ -295,8 +317,10 @@ def analyzeRecursor (indName : Name) : MetaM RecursorAnalysis := do
                       -- Implicit user binder: skip if fixed in ctor's own
                       -- return type (index unified by motive) or referenced in
                       -- another user binder's type (subst chain unifies it).
-                      -- Otherwise it's a genuinely free user field (F4:
-                      -- `{child : Bad}` in `Bad.mk`) that must be compared.
+                      -- Otherwise it's a genuinely free user field — an
+                      -- implicit binder that doesn't appear anywhere else,
+                      -- e.g. `mk : {x : T} → Nat → T` — that must be
+                      -- compared just like an explicit field.
                       let mut referenced := isFixedInCtorReturn
                       if !referenced then
                         for y in fvars do
@@ -360,11 +384,11 @@ def analyzeRecursor (indName : Name) : MetaM RecursorAnalysis := do
            motiveDomainStxs, motiveIndNames, motiveIndexBinderStxs,
            paramBinderStxs, instBinderStxs, ctorsByType, isPrivate }
 
-/-- Generate the if-subst comparison chain (matches the standard DecEq deriver pattern).
-    Each field is compared in sequence; after `subst h`, types of subsequent fields are
-    unified, which is critical for index-changing recursion where field types depend on
-    free index variables. Note that Lean's kernel restricts how nested inductive types
-    can use heterogeneous indices, so this part is somewhat fragile. -/
+/-- Generate the `if`/`subst` comparison chain used by the standard
+    `DecidableEq` deriver. Each field is compared in sequence; after `subst h`,
+    types of subsequent fields are unified, which is what makes index-changing
+    recursion elaborate correctly when later field types depend on earlier
+    equalities. -/
 private def mkIfSubstChain (analysis : RecursorAnalysis)
     : List (Ident × Ident × Option Nat × Bool) → TermElabM Term
   | [] => `(isTrue rfl)
@@ -409,7 +433,9 @@ private def mkSameCtorAlt
     -- (a, b, recursiveMotiveIdx?, isProp). A None index tries to resolve deceq by existing instances.
     let mut todo : Array (Ident × Ident × Option Nat × Bool) := #[]
     -- Index into ctor.fields (recursor-derived), for recursiveness/isProp info.
-    -- Advances only for explicit constructor fields (not index variables).
+    -- Advances for every binder the analyzer recorded a FieldInfo for —
+    -- every explicit binder plus any implicit binder that is a genuinely
+    -- free user field.
     let mut fieldIdx : Nat := 0
 
     for i in [:numFields] do
@@ -433,7 +459,7 @@ private def mkSameCtorAlt
       --   explicit                                     → yes
       --   implicit + fixed (appears in return type)    → no (index)
       --   implicit + free + referenced in another user → no (determined)
-      --   implicit + free + not referenced anywhere    → yes (F4: user field)
+      --   implicit + free + not referenced anywhere    → yes (user field)
       let hasFieldInfo ←
         if isExplicit then pure true
         else if isFixed then pure false
@@ -492,7 +518,7 @@ private def mkDecEqFunc
   let allBinderStxs := analysis.paramBinderStxs ++ analysis.instBinderStxs
     ++ indexBinders ++ #[mainBinderStx]
 
-  -- F5a: empty inductive — any value is uninhabited, nomatch either side.
+  -- Empty inductive — no inhabitant exists, so `nomatch` either argument.
   if ctors.isEmpty then
     return ←
       if analysis.isPrivate then
@@ -502,13 +528,9 @@ private def mkDecEqFunc
         `(command| def $defId
             $[$allBinderStxs:bracketedBinder]* : Decidable ($aId = $bId) := nomatch $aId)
 
-  -- F5b: Prop-valued inductive — all inhabitants are definitionally equal
+  -- Prop-valued inductive — all inhabitants are definitionally equal
   -- by proof irrelevance, so `rfl : a = b` type-checks.
-  let indVal ← getConstInfoInduct indName
-  let isPropInd := match indVal.type.getForallBody with
-    | .sort l => l.isZero
-    | _ => false
-  if isPropInd then
+  if ← isPropInductive indName then
     return ←
       if analysis.isPrivate then
         `(command| private def $defId
@@ -577,20 +599,14 @@ def deriveForGroup (firstName : Name) : CommandElabM Unit := do
     for c in analysis.ctorsByType[i]! do
       trace[DecEqMutual.derive] "  motive[{i}] ctor {c.name}, nfields={c.fields.size}"
 
-  -- Generate casesOnSameCtor helpers for each motive.
-  -- Skip Prop-valued inductives: casesOnSameCtor panics on them because
-  -- the kernel's generic casesOn uses sort polymorphism that does not
-  -- unify with Prop's universe level. We short-circuit such motives to
-  -- `isTrue rfl` in mkDecEqFunc, so the helper is unused for them.
+  -- Generate `casesOnSameCtor` helpers for each non-`Prop` motive.
+  -- Prop-valued inductives short-circuit to `isTrue rfl` in `mkDecEqFunc`,
+  -- so they never need a same-constructor helper.
   let sameCtorNames ← liftTermElabM <| MetaM.run' <| do
     let mut names : Array Name := #[]
     for i in [:analysis.numMotives] do
       let indName := analysis.motiveIndNames[i]!
-      let indVal ← getConstInfoInduct indName
-      let isPropInd := match indVal.type.getForallBody with
-        | .sort l => l.isZero
-        | _ => false
-      if isPropInd then
+      if ← isPropInductive indName then
         names := names.push .anonymous
       else
         let sameCtorName ← mkFreshUserName (indName ++ `match_on_same_ctor)
